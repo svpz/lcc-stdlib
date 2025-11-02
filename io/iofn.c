@@ -1,6 +1,6 @@
 #ifndef STDIOFN_H
 #define STDIOFN_H
-
+#include "defines.c"
 /**
  * # print
  * 
