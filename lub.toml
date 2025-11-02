@@ -5,3 +5,12 @@ path = "runtime"
 [packages]
 
 [commands]
+
+[compiler]
+backend = "x86_64_windows"
+
+[compiler.tools]
+assembler = "nasm"
+assembler_flags = ["-f", "win64"]
+linker = "gcc"
+linker_flags = ["-lws2_32"]
