@@ -1,3 +1,5 @@
+#ifndef STDNETFN_H
+#define STDNETFN_H
 // netfn.c — Low-level networking stdlib for LUB / LCC (Windows)
 // Works without any #include, relies on extern declarations
 
@@ -143,3 +145,5 @@ void close_socket(SOCKET sock)
 {
     closesocket(sock);
 }
+
+#endif
