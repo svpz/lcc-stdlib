@@ -1,8 +1,3 @@
-#ifndef STDFILEFN_H
-#define STDFILEFN_H
-
-#include "dmafn.c"
-
 typedef unsigned long long size_t;
 typedef unsigned long long HANDLE;
 typedef unsigned long DWORD;
@@ -14,74 +9,95 @@ struct LARGE_INTEGER
     LONGLONG QuadPart;
 };
 
-#define GENERIC_READ 0x80000000
-#define GENERIC_WRITE 0x40000000
-#define FILE_SHARE_READ 0x00000001
-#define FILE_SHARE_WRITE 0x00000002
-#define OPEN_EXISTING 3
-#define CREATE_ALWAYS 2
-#define OPEN_ALWAYS 4
-#define FILE_ATTRIBUTE_NORMAL 0x80
-#define FILE_BEGIN 0
-#define FILE_CURRENT 1
-#define FILE_END 2
+
 
 // FILE_HANDLE struct
-struct FILE_HANDLE
+struct  FILE_HANDLE
 {
     HANDLE handle;
     size_t size;
     size_t pos;
     int eof;
     int error;
-    int mode; // bitmask: 1=read,2=write,4=append,8=update
+    int mode;   // bitmask: 1=read,2=write,4=append,8=update
+    int in_use; // pool flag
 };
+extern HANDLE CreateFileA(char *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode, void *lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
 
-// Win32 API functions (extern)
-extern HANDLE CreateFileA(char *lpFileName, DWORD dwDesiredAccess, DWORD dwShareMode,
-                          void *lpSecurityAttributes, DWORD dwCreationDisposition,
-                          DWORD dwFlagsAndAttributes, HANDLE hTemplateFile);
-extern BOOL ReadFile(HANDLE hFile, char *lpBuffer, DWORD nNumberOfBytesToRead,
-                     DWORD *lpNumberOfBytesRead, void *lpOverlapped);
-extern BOOL WriteFile(HANDLE hFile, char *lpBuffer, DWORD nNumberOfBytesToWrite,
-                      DWORD *lpNumberOfBytesWritten, void *lpOverlapped);
+extern int ReadFile(HANDLE hFile);
+extern BOOL WriteFile(HANDLE hFile, char *lpBuffer, DWORD nNumberOfBytesToWrite, DWORD *lpNumberOfBytesWritten, void *lpOverlapped);
 extern BOOL CloseHandle(HANDLE hObject);
 extern BOOL GetFileSizeEx(HANDLE hFile, struct LARGE_INTEGER *lpFileSize);
-extern BOOL SetFilePointerEx(HANDLE hFile, struct LARGE_INTEGER liDistanceToMove,
-                             struct LARGE_INTEGER *lpNewFilePointer, DWORD dwMoveMethod);
+extern BOOL SetFilePointerEx(HANDLE hFile, struct LARGE_INTEGER liDistanceToMove, struct LARGE_INTEGER *lpNewFilePointer, DWORD dwMoveMethod);
 extern BOOL DeleteFileA(char *lpFileName);
 extern BOOL CreateDirectoryA(char *lpPathName, void *lpSecurityAttributes);
 extern DWORD GetLastError();
+
+
+// Static pool configuration
+
+struct FILE_HANDLE file_handle_pool[256];
+
+// Allocate a FILE_HANDLE from the pool; returns 0 if none available
+static struct FILE_HANDLE *allocate_file_handle_from_pool()
+{
+    int i;
+    for (i = 0; i < 256; ++i)
+    {
+        if (!file_handle_pool[i].in_use)
+        {
+            file_handle_pool[i].in_use = 1;
+            file_handle_pool[i].handle = 0;
+            file_handle_pool[i].size = 0;
+            file_handle_pool[i].pos = 0;
+            file_handle_pool[i].eof = 0;
+            file_handle_pool[i].error = 0;
+            file_handle_pool[i].mode = 0;
+            return &file_handle_pool[i];
+        }
+    }
+    return 0;
+}
+
+// Release a FILE_HANDLE back to the pool
+static void free_file_handle_to_pool(struct FILE_HANDLE *f)
+{
+    if (!f)
+        return;
+    f->in_use = 0;
+    f->handle = 0;
+    f->size = 0;
+    f->pos = 0;
+    f->eof = 0;
+    f->error = 0;
+    f->mode = 0;
+}
 
 // fopen implementation
 struct FILE_HANDLE *fopen(char *path, char *mode)
 {
     if (!path || !mode)
         return 0;
-
     DWORD access = 0;
-    DWORD creation = OPEN_EXISTING;
-    int read = 0;
-    int write = 0;
-    int append = 0;
-    int update = 0;
+    DWORD creation = 3;
+    int read = 0, write = 0, append = 0, update = 0;
 
     char m0 = mode[0];
     if (m0 == 'r')
     {
         read = 1;
-        creation = OPEN_EXISTING;
+        creation = 3;
     }
     else if (m0 == 'w')
     {
         write = 1;
-        creation = CREATE_ALWAYS;
+        creation = 2;
     }
     else if (m0 == 'a')
     {
         write = 1;
         append = 1;
-        creation = OPEN_ALWAYS;
+        creation = 4;
     }
 
     // check for '+'
@@ -95,24 +111,23 @@ struct FILE_HANDLE *fopen(char *path, char *mode)
                 read = 1;
                 write = 1;
             }
-            i = i + 1;
+            i++;
         }
     }
 
     if (read)
-        access = access | GENERIC_READ;
+        access |= 0x80000000;
     if (write)
-        access = access | GENERIC_WRITE;
+        access |= 0x40000000;
 
-    DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE;
-    DWORD flags = FILE_ATTRIBUTE_NORMAL;
+    DWORD share = 0x00000001 | 0x00000002;
+    DWORD flags = 0x80;
 
     HANDLE h = CreateFileA(path, access, share, 0, creation, flags, 0);
     if (h == (HANDLE)(-1) || h == 0)
         return 0;
 
-    // Dynamically allocate file handle
-    struct FILE_HANDLE *f = malloc(sizeof(struct FILE_HANDLE));
+    struct FILE_HANDLE *f = allocate_file_handle_from_pool();
     if (!f)
     {
         CloseHandle(h);
@@ -124,7 +139,6 @@ struct FILE_HANDLE *fopen(char *path, char *mode)
     f->eof = 0;
     f->error = 0;
     f->mode = 0;
-
     if (read)
         f->mode = f->mode | 1;
     if (write)
@@ -147,16 +161,18 @@ struct FILE_HANDLE *fopen(char *path, char *mode)
         f->size = 0;
     }
 
-    struct LARGE_INTEGER move;
-    move.QuadPart = 0;
     if (append)
     {
-        SetFilePointerEx(h, move, 0, FILE_END);
+        struct LARGE_INTEGER move;
+        move.QuadPart = 0;
+        SetFilePointerEx(h, move, 0, 2);
         f->pos = f->size;
     }
     else
     {
-        SetFilePointerEx(h, move, 0, FILE_BEGIN);
+        struct LARGE_INTEGER move;
+        move.QuadPart = 0;
+        SetFilePointerEx(h, move, 0, 0);
         f->pos = 0;
     }
 
@@ -166,13 +182,11 @@ struct FILE_HANDLE *fopen(char *path, char *mode)
 // fclose
 int fclose(struct FILE_HANDLE *f)
 {
-
     if (!f)
         return -1;
     if (f->handle)
         CloseHandle(f->handle);
-    free(f);
-    print("lol 33");
+    free_file_handle_to_pool(f);
     return 0;
 }
 
@@ -188,6 +202,9 @@ size_t fread(void *ptr, size_t size, size_t nmemb, struct FILE_HANDLE *f)
     }
 
     size_t total = size * nmemb;
+    if (total == 0)
+        return 0;
+
     DWORD toRead = (DWORD)total;
     DWORD actuallyRead = 0;
     BOOL ok = ReadFile(f->handle, (char *)ptr, toRead, &actuallyRead, 0);
@@ -197,7 +214,7 @@ size_t fread(void *ptr, size_t size, size_t nmemb, struct FILE_HANDLE *f)
         return 0;
     }
 
-    f->pos = f->pos + actuallyRead;
+    f->pos += actuallyRead;
     if (actuallyRead < toRead)
         f->eof = 1;
     return (size_t)(actuallyRead / (DWORD)size);
@@ -215,6 +232,9 @@ size_t fwrite(void *ptr, size_t size, size_t nmemb, struct FILE_HANDLE *f)
     }
 
     size_t total = size * nmemb;
+    if (total == 0)
+        return 0;
+
     DWORD toWrite = (DWORD)total;
     DWORD actuallyWritten = 0;
     BOOL ok = WriteFile(f->handle, (char *)ptr, toWrite, &actuallyWritten, 0);
@@ -224,7 +244,7 @@ size_t fwrite(void *ptr, size_t size, size_t nmemb, struct FILE_HANDLE *f)
         return 0;
     }
 
-    f->pos = f->pos + actuallyWritten;
+    f->pos += actuallyWritten;
     if (f->pos > f->size)
         f->size = f->pos;
     return (size_t)(actuallyWritten / (DWORD)size);
@@ -235,23 +255,19 @@ int fseek(struct FILE_HANDLE *f, long long offset, int whence)
 {
     if (!f)
         return -1;
-
     struct LARGE_INTEGER li;
     li.QuadPart = offset;
     struct LARGE_INTEGER newpos;
-
     BOOL ok = SetFilePointerEx(f->handle, li, &newpos, (DWORD)whence);
     if (!ok)
     {
         f->error = 1;
         return -1;
     }
-
     if (newpos.QuadPart < 0)
         f->pos = 0;
     else
         f->pos = (size_t)newpos.QuadPart;
-
     f->eof = 0;
     return 0;
 }
@@ -264,13 +280,12 @@ long long ftell(struct FILE_HANDLE *f)
     return (long long)f->pos;
 }
 
-// remove_file
+// remove_file (no ternary)
 int remove_file(char *path)
 {
     BOOL ok;
     if (!path)
         return -1;
-
     ok = DeleteFileA(path);
     if (ok)
         return 0;
@@ -278,18 +293,15 @@ int remove_file(char *path)
         return -1;
 }
 
-// make_dir
+// make_dir (no ternary)
 int make_dir(char *path)
 {
     BOOL ok;
     if (!path)
         return -1;
-
     ok = CreateDirectoryA(path, 0);
     if (ok)
         return 0;
     else
         return -1;
 }
-
-#endif

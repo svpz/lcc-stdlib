@@ -88,19 +88,61 @@ void* malloc(size_t size) {
 }
 
 // free() — mark a block free and merge consecutive free ones
+/* safer free() — mark a block free and merge consecutive free ones */
 void free(void* ptr) {
     if (!ptr) return;
+
+    /* mark block free */
     struct Block* block = (struct Block*)((char*)ptr - sizeof(struct Block));
     block->is_free = 1;
 
-    // Merge consecutive free blocks
+    /* defensive: if heap_head is null just return */
+    if (!heap_head) return;
+
     struct Block* curr = heap_head;
-    while (curr && curr->next) {
-        if (curr->is_free && curr->next->is_free) {
-            curr->size = curr->size + sizeof(struct Block) + curr->next->size;
-            curr->next = curr->next->next;
+    /* small safety: protect against infinite loops by max iterations */
+    unsigned long iter = 0;
+    unsigned long max_iter = 1000000; /* very large, just a guard */
+
+    while (curr != 0 && curr->next != 0) {
+        /* sanity: next must be a higher address than curr */
+        if ((unsigned long long)curr->next <= (unsigned long long)curr) {
+            /* list is corrupted — bail out */
+            print("free: corrupted list (next <= curr)\n");
+            return;
+        }
+
+        /* compute end address of curr */
+        char* curr_end = (char*)curr + (long)sizeof(struct Block) + (long)curr->size;
+        /* pointer to next block */
+        struct Block* nextb = curr->next;
+
+        /* check that both are free AND physically adjacent */
+        if (curr->is_free && nextb->is_free && (char*)nextb == curr_end) {
+            /* additional sanity: avoid creating self-cycle when updating links */
+            struct Block* next_next = nextb->next;
+            if (next_next == curr) {
+                /* corrupt cycle detected, bail */
+                print("free: would create cycle — abort merge\n");
+                return;
+            }
+
+            /* safe to merge */
+            curr->size = curr->size + (unsigned long long)sizeof(struct Block) + nextb->size;
+            curr->next = next_next;
+            /* do NOT advance curr - try to merge again with new curr->next */
+
         } else {
+            /* normal advance */
             curr = curr->next;
+        }
+
+
+        /* iteration guard */
+        iter = iter + 1;
+        if (iter > max_iter) {
+            print("free: iteration limit exceeded, aborting (possible corruption)\n");
+            return;
         }
     }
 }
